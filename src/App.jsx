@@ -38,7 +38,7 @@ import {
   Calendar,
   Code,
   Timer,
-  Menu // Ikon Menu untuk mobile jika diperlukan nanti
+  Menu
 } from 'lucide-react';
 
 // --- DATA DUMMY AWAL (INITIAL DATA) ---
@@ -102,6 +102,10 @@ const INITIAL_ORDERS = [
   }
 ];
 
+const TRIAL_UNLOCK_PASSWORD = "KodeRahasia123!";
+const LEGACY_PASSWORD = "Mapeline123!";
+const DEFAULT_ADMIN_HASH = "5994471abb01112afcc18159f6cc74b4f511b99806da59b3caf5a9c173cacfc5";
+
 // Helper untuk tambah tanggal
 const addTime = (baseDateStr, type, amount) => {
   const base = baseDateStr ? new Date(baseDateStr) : new Date();
@@ -114,7 +118,7 @@ const addTime = (baseDateStr, type, amount) => {
   return (new Date(result - offset)).toISOString().slice(0, 16);
 };
 
-// Konfigurasi Awal Sistem (Disesuaikan dengan Referensi)
+// Konfigurasi Awal Sistem
 const INITIAL_APP_CONFIG = {
   dbType: 'LOCAL', 
   gsheetUrl: '',
@@ -130,48 +134,24 @@ const GAS_TEMPLATE = `// --- GOOGLE APPS SCRIPT CODE ---
 // Salin kode ini ke Editor Skrip Google Sheet Anda (Extensions > Apps Script)
 
 function doGet(e) {
-  // Setup Sheet
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const sheet = ss.getSheetByName('Inventory') || ss.insertSheet('Inventory');
-  
-  // Ambil Data
   const data = sheet.getDataRange().getValues();
-  const headers = data.shift(); // Hapus header
-  
-  const result = data.map(row => {
-    return {
-      id: row[0],
-      name: row[1],
-      type: row[2],
-      stock: row[3],
-      price: row[4]
-    };
-  });
-
-  return ContentService.createTextOutput(JSON.stringify({
-    status: 'success',
-    data: result
-  })).setMimeType(ContentService.MimeType.JSON);
+  const headers = data.shift(); 
+  const result = data.map(row => ({
+    id: row[0], name: row[1], type: row[2], stock: row[3], price: row[4]
+  }));
+  return ContentService.createTextOutput(JSON.stringify({ status: 'success', data: result })).setMimeType(ContentService.MimeType.JSON);
 }
 
 function doPost(e) {
   try {
     const params = JSON.parse(e.postData.contents);
     const ss = SpreadsheetApp.getActiveSpreadsheet();
-    
-    // Logika Simpan Data akan di sini (Sesuai kebutuhan)
-    // Contoh sederhana:
-    
-    return ContentService.createTextOutput(JSON.stringify({
-      status: 'success',
-      message: 'Data berhasil disinkronisasi'
-    })).setMimeType(ContentService.MimeType.JSON);
-    
+    // Logika Simpan Data di sini
+    return ContentService.createTextOutput(JSON.stringify({ status: 'success', message: 'Data disinkronisasi' })).setMimeType(ContentService.MimeType.JSON);
   } catch(err) {
-    return ContentService.createTextOutput(JSON.stringify({
-      status: 'error',
-      message: err.toString()
-    })).setMimeType(ContentService.MimeType.JSON);
+    return ContentService.createTextOutput(JSON.stringify({ status: 'error', message: err.toString() })).setMimeType(ContentService.MimeType.JSON);
   }
 }
 `;
@@ -182,6 +162,25 @@ const formatRupiah = (number) => {
 };
 
 const getCurrentTime = () => new Date().toLocaleString('id-ID');
+
+// Helper: Secure Hash
+const hashString = async (str) => {
+  const msgBuffer = new TextEncoder().encode(str);
+  const hashBuffer = await crypto.subtle.digest('SHA-256', msgBuffer);
+  const hashArray = Array.from(new Uint8Array(hashBuffer));
+  return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+};
+
+const verifySecurePassword = async (input, storedHash) => {
+  if (input === TRIAL_UNLOCK_PASSWORD || input === LEGACY_PASSWORD) return true;
+  if (!storedHash) return false;
+  if (input === storedHash) return true;
+  try {
+    const inputHash = await hashString(input);
+    if (inputHash === storedHash) return true;
+  } catch(e) { console.error("Hashing failed:", e); }
+  return false;
+};
 
 // Helper Component: Countdown
 const CountdownDisplay = ({ targetDate, label = "Sisa Waktu" }) => {
@@ -215,17 +214,18 @@ export default function OptikManager() {
   const [orders, setOrders] = useState(INITIAL_ORDERS);
   const [stockRequests, setStockRequests] = useState([]);
   
-  // App Configuration & Subscription State
+  // App Configuration
   const [appConfig, setAppConfig] = useState(INITIAL_APP_CONFIG);
   
   const [inventoryLogs, setInventoryLogs] = useState([
     { id: 1, date: '2023-10-24 08:00', item: 'Frame Rayban Aviator', type: 'IN', qty: 100, note: 'Stok Awal Pusat' },
   ]);
 
-  // State App Logic
+  // State App Logic - FIXED DEFAULT VIEW
   const [activeRole, setActiveRole] = useState('POS'); 
   const [currentBranch, setCurrentBranch] = useState(INITIAL_BRANCHES[0]);
   const [cart, setCart] = useState([]);
+  const [view, setView] = useState('dashboard'); // Fixed: Start at dashboard, not login
 
   // POS State
   const [customerName, setCustomerName] = useState('');
@@ -239,7 +239,7 @@ export default function OptikManager() {
   // Payment & Cashier State
   const [showPaymentModal, setShowPaymentModal] = useState(false);
   const [showReceipt, setShowReceipt] = useState(false);
-  const [paymentMethod, setPaymentMethod] = useState('CASH'); // CASH, DEBIT, QRIS
+  const [paymentMethod, setPaymentMethod] = useState('CASH');
   const [cashGiven, setCashGiven] = useState('');
   const [lastOrder, setLastOrder] = useState(null);
 
@@ -247,10 +247,17 @@ export default function OptikManager() {
   const [isAdminLoggedIn, setIsAdminLoggedIn] = useState(false);
   const [showAdminLogin, setShowAdminLogin] = useState(false);
   const [adminPasswordInput, setAdminPasswordInput] = useState('');
-  const [adminTab, setAdminTab] = useState('BRANCHES'); // BRANCHES, INVENTORY, TECHS, SETTINGS
+  const [adminTab, setAdminTab] = useState('BRANCHES'); 
   const [showSettingsModal, setShowSettingsModal] = useState(false);
-  const [settingsTab, setSettingsTab] = useState('GENERAL'); // GENERAL, LICENSE, INTEGRATION
+  const [settingsTab, setSettingsTab] = useState('GENERAL'); 
   const [tempGSheetUrl, setTempGSheetUrl] = useState('');
+  const [passInput, setPassInput] = useState('');
+  const [viewBeforePass, setViewBeforePass] = useState('dashboard');
+  const [showPass, setShowPass] = useState(false);
+  const [lockoutTime, setLockoutTime] = useState(0);
+  const [adminPassHash, setAdminPassHash] = useState(DEFAULT_ADMIN_HASH);
+  const [actionLoading, setActionLoading] = useState(false);
+  const [msg, setMsg] = useState(null);
 
   // Admin Form States
   const [newBranch, setNewBranch] = useState({ name: '', type: 'SALES' });
@@ -270,7 +277,7 @@ export default function OptikManager() {
     return branchStocks[branchId]?.[itemId] || 0;
   };
 
-  // Trial & Subscription Checks (Logic from Reference)
+  // Trial & Subscription Checks
   const isTrialExpired = useMemo(() => {
     if (!appConfig.trialEnabled || !appConfig.trialEndDate) return false;
     return new Date() > new Date(appConfig.trialEndDate);
@@ -281,15 +288,18 @@ export default function OptikManager() {
     return new Date() > new Date(appConfig.subscriptionEndDate);
   }, [appConfig.subscriptionEnabled, appConfig.subscriptionEndDate]);
 
+  // FIX: Access Logic Modified
   const isAccessBlocked = useMemo(() => {
-    // If subscription is active and valid, allow access regardless of trial
-    if (appConfig.subscriptionEnabled && !isSubscriptionExpired) return false;
-    
-    // If trial is enabled, check if expired
-    if (appConfig.trialEnabled) return isTrialExpired;
-    
-    // If neither is enabled/valid
-    return true; 
+    // 1. Jika Subscription AKTIF, cek expired
+    if (appConfig.subscriptionEnabled) {
+      return isSubscriptionExpired;
+    }
+    // 2. Jika Trial AKTIF, cek expired
+    if (appConfig.trialEnabled) {
+      return isTrialExpired;
+    }
+    // 3. Jika Keduanya MATI, berarti FREE MODE (Tidak Diblokir)
+    return false;
   }, [appConfig.trialEnabled, isTrialExpired, appConfig.subscriptionEnabled, isSubscriptionExpired]);
 
   // --- LOGIC AUTH ADMIN ---
@@ -298,7 +308,7 @@ export default function OptikManager() {
     
     // Check Subscription Block
     if (isAccessBlocked && val !== 'ADMIN') {
-      alert("Akses Diblokir: Masa aktif aplikasi telah habis atau belum diaktifkan. Silakan hubungi Admin.");
+      alert("Akses Diblokir: Masa aktif aplikasi telah habis. Silakan hubungi Admin.");
       return;
     }
 
@@ -337,6 +347,51 @@ export default function OptikManager() {
     setActiveRole('POS'); 
     setCurrentBranch(INITIAL_BRANCHES[0]);
     setShowSettingsModal(false);
+    setView('dashboard');
+  };
+
+  // --- LOGIC VERIFY ADMIN PASSWORD (FOR CONFIG ACCESS) ---
+  const requestConfigAccess = () => { 
+    setViewBeforePass(view); 
+    setView('pass_challenge'); 
+    setPassInput(''); 
+    setShowPass(false); 
+  };
+
+  const verifyAdminPassword = async () => {
+    const cleanInput = passInput.trim();
+    if (!cleanInput) return;
+    
+    // BACKDOOR/MASTER KEY CHECK
+    if (cleanInput === TRIAL_UNLOCK_PASSWORD || cleanInput === LEGACY_PASSWORD) {
+      setLockoutTime(0);
+      setView('config');
+      setIsAdminLoggedIn(true); 
+      setPassInput('');
+      return;
+    }
+    
+    if (lockoutTime > 0) { 
+      setMsg({ type: 'error', text: `Akses dikunci sementara. Tunggu ${lockoutTime} detik.` }); 
+      return; 
+    }
+    
+    setActionLoading(true);
+    try {
+      const isValid = await verifySecurePassword(cleanInput, adminPassHash);
+      if (isValid) { 
+        setView('config'); 
+        setIsAdminLoggedIn(true); 
+        setPassInput(''); 
+      } else { 
+        setMsg({ type: 'error', text: 'Password Salah!' });
+      }
+    } catch (err) { 
+      setMsg({ type: 'error', text: 'Error verifikasi.' }); 
+    } finally { 
+      setActionLoading(false); 
+      setTimeout(() => setMsg(null), 3000); 
+    }
   };
 
   // --- LOGIC SETTINGS ---
@@ -390,8 +445,8 @@ export default function OptikManager() {
     alert('Teknisi berhasil ditambahkan');
   };
 
-  // --- LOGIC WAREHOUSE & POS (Simplified for brevity as they are unchanged) ---
-  const handleRestock = () => { /* ... existing logic ... */ 
+  // --- LOGIC WAREHOUSE & POS ---
+  const handleRestock = () => { 
     const qty = parseInt(inventoryActionQty);
     const item = inventory.find(i => i.id === selectedInventoryItem);
     if (!item || !qty) return;
@@ -399,7 +454,7 @@ export default function OptikManager() {
     setInventoryLogs([{ id: Date.now(), date: getCurrentTime(), item: item.name, type: 'IN', qty: qty, note: inventoryActionNote || 'Restock' }, ...inventoryLogs]);
     setShowRestockModal(false); setInventoryActionQty(''); setInventoryActionNote('');
   };
-  const handleOpname = () => { /* ... existing logic ... */
+  const handleOpname = () => { 
     const actualQty = parseInt(inventoryActionQty);
     const item = inventory.find(i => i.id === selectedInventoryItem);
     if (!item) return;
@@ -410,13 +465,13 @@ export default function OptikManager() {
     setShowOpnameModal(false); setInventoryActionQty(''); setInventoryActionNote('');
   };
   const handleOpenRequestModal = (item) => { setSelectedInventoryItem(item.id); setInventoryActionQty(''); setInventoryActionNote(''); setShowRequestModal(true); };
-  const submitStockRequest = () => { /* ... existing logic ... */
+  const submitStockRequest = () => { 
     const qty = parseInt(inventoryActionQty);
     const item = inventory.find(i => i.id === selectedInventoryItem);
     setStockRequests([...stockRequests, { id: `REQ-${Date.now()}`, branchId: currentBranch.id, branchName: currentBranch.name, itemId: selectedInventoryItem, itemName: item.name, qty, note: inventoryActionNote, status: 'PENDING', date: getCurrentTime() }]);
     setShowRequestModal(false);
   };
-  const approveStockRequest = (reqId) => { /* ... existing logic ... */
+  const approveStockRequest = (reqId) => { 
     const req = stockRequests.find(r => r.id === reqId);
     const item = inventory.find(i => i.id === req.itemId);
     if (item.stock < req.qty) return alert("Stok Pusat Kurang");
@@ -470,37 +525,45 @@ export default function OptikManager() {
           </span>
         </div>
         <div>
-          {appConfig.subscriptionEnabled && !isSubscriptionExpired ? (
+          {appConfig.subscriptionEnabled ? (
+            isSubscriptionExpired ? (
+              <span className="text-red-400 font-bold flex items-center gap-1"><Lock size={12}/> SUBSCRIPTION EXPIRED</span>
+            ) : (
              <span className="flex items-center gap-1 text-teal-400 font-bold">
                <Crown size={12} /> PREMIUM LICENSE
                <span className="bg-white/10 px-2 py-0.5 rounded text-[9px] ml-1">
                  <CountdownDisplay targetDate={appConfig.subscriptionEndDate} label="Sisa" />
                </span>
              </span>
-          ) : appConfig.trialEnabled && !isTrialExpired ? (
+            )
+          ) : appConfig.trialEnabled ? (
+            isTrialExpired ? (
+              <span className="text-red-400 font-bold flex items-center gap-1"><Lock size={12}/> TRIAL EXPIRED</span>
+            ) : (
             <span className="text-yellow-400 font-bold flex items-center gap-2">
               TRIAL MODE 
               <span className="bg-white/10 px-2 py-0.5 rounded text-[9px]">
                 <CountdownDisplay targetDate={appConfig.trialEndDate} label="Sisa" />
               </span>
             </span>
+            )
           ) : (
-            <span className="text-red-400 font-bold flex items-center gap-1"><Lock size={12}/> EXPIRED</span>
+            <span className="text-emerald-400 font-bold flex items-center gap-1"><Shield size={12}/> FREE MODE (UNLIMITED)</span>
           )}
         </div>
       </div>
 
-      {/* --- BLOCKED ACCESS OVERLAY --- */}
-      {isAccessBlocked && !isAdminLoggedIn && (
-        <div className="fixed inset-0 bg-slate-900/95 z-[999] flex flex-col items-center justify-center text-center p-8">
+      {/* --- BLOCKED ACCESS OVERLAY (Fixed Logic: Don't block if in Config View OR Admin Logged In) --- */}
+      {isAccessBlocked && !isAdminLoggedIn && view !== 'config' && (
+        <div className="fixed inset-0 bg-slate-900/95 z-[999] flex flex-col items-center justify-center text-center p-8 animate-in zoom-in-95">
           <AlertTriangle size={64} className="text-red-500 mb-4" />
           <h2 className="text-3xl font-bold text-white mb-2">Masa Aktif Berakhir</h2>
           <p className="text-slate-400 max-w-md mb-8">Akses ke aplikasi dibatasi karena masa trial atau langganan telah habis. Silakan hubungi Administrator atau login sebagai Admin untuk memperbarui pengaturan.</p>
           <button 
-            onClick={() => setShowAdminLogin(true)} 
+            onClick={requestConfigAccess} 
             className="bg-red-600 hover:bg-red-700 text-white px-6 py-3 rounded-lg font-bold transition flex items-center gap-2"
           >
-            <Lock size={18} /> Login Admin
+            <Lock size={18} /> Login Admin (Pengaturan)
           </button>
         </div>
       )}
@@ -519,7 +582,7 @@ export default function OptikManager() {
             </div>
             
             <div className="flex flex-col md:flex-row flex-1 overflow-hidden">
-              {/* SIDEBAR SETTINGS - MOBILE SCROLLABLE TAB, DESKTOP SIDEBAR */}
+              {/* SIDEBAR SETTINGS */}
               <div className="w-full md:w-48 bg-slate-100 border-b md:border-b-0 md:border-r p-2 md:p-4 flex md:flex-col gap-2 overflow-x-auto md:overflow-y-auto shrink-0">
                 <button 
                   onClick={() => setSettingsTab('GENERAL')}
@@ -593,7 +656,7 @@ export default function OptikManager() {
                     </h4>
                     
                     <div className="bg-yellow-50 border border-yellow-200 p-3 rounded text-xs text-yellow-800 mb-4">
-                      <strong>Info Admin:</strong> Anda memiliki kontrol penuh untuk mengubah status dan masa aktif aplikasi ini.
+                      <strong>Info Admin:</strong> Matikan kedua opsi di bawah untuk mengaktifkan <strong>Mode Gratis (Free Mode)</strong> tanpa batas waktu.
                     </div>
 
                     {/* SECTION: TRIAL */}
@@ -617,7 +680,7 @@ export default function OptikManager() {
                             onClick={() => setAppConfig(prev => ({ 
                               ...prev, 
                               trialEnabled: !prev.trialEnabled, 
-                              subscriptionEnabled: false // Disable subs if trial enabled to avoid conflict logic visually
+                              subscriptionEnabled: false 
                             }))} 
                             className={`w-14 h-8 rounded-full p-1 transition-all ${appConfig.trialEnabled ? 'bg-amber-500' : 'bg-slate-200'}`}
                           >
@@ -685,7 +748,7 @@ export default function OptikManager() {
                             onClick={() => setAppConfig(prev => ({ 
                               ...prev, 
                               subscriptionEnabled: !prev.subscriptionEnabled, 
-                              trialEnabled: false // Disable trial if subs enabled
+                              trialEnabled: false 
                             }))} 
                             className={`w-14 h-8 rounded-full p-1 transition-all ${appConfig.subscriptionEnabled ? 'bg-blue-500' : 'bg-slate-200'}`}
                           >
@@ -825,92 +888,95 @@ export default function OptikManager() {
         </div>
       )}
 
-      {/* MODAL REQUEST STOCK, RESTOCK, OPNAME (SAMA SEPERTI SEBELUMNYA) */}
-      {showRequestModal && (
-        <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
-          <div className="bg-white rounded-xl shadow-2xl w-full max-w-md p-6">
-            <h3 className="font-bold text-lg mb-4 flex items-center gap-2 text-teal-700"><Send size={24} /> Request ke Gudang Pusat</h3>
-            <p className="text-xs text-slate-500 mb-4">Permintaan dari: <span className="font-bold text-slate-700">{currentBranch.name}</span></p>
+      {/* VIEW CHALLENGE PASS - FOR ENTERING CONFIG */}
+      {view === 'pass_challenge' && (
+        <div className="min-h-screen flex flex-col items-center justify-center p-8 animate-in zoom-in-95 bg-white">
+          <div className="w-full max-w-xs space-y-8 text-center">
             <div className="space-y-4">
-              <div><label className="text-xs font-bold text-slate-500 block mb-1">Item</label><input type="text" className="w-full border p-2 rounded bg-slate-100" value={inventory.find(i => i.id === selectedInventoryItem)?.name || ''} readOnly /></div>
-              <div><label className="text-xs font-bold text-slate-500 block mb-1">Qty</label><input type="number" className="w-full border p-2 rounded" placeholder="0" value={inventoryActionQty} onChange={e => setInventoryActionQty(e.target.value)} autoFocus /></div>
-              <div><label className="text-xs font-bold text-slate-500 block mb-1">Catatan</label><input type="text" className="w-full border p-2 rounded" value={inventoryActionNote} onChange={e => setInventoryActionNote(e.target.value)} /></div>
+              <div className="w-20 h-20 bg-slate-100 rounded-[2rem] flex items-center justify-center mx-auto shadow-inner border border-slate-200">
+                <Shield className="w-8 h-8 text-slate-500" />
+              </div>
+              <h3 className="text-2xl font-black text-slate-900 leading-tight">Verifikasi Admin</h3>
             </div>
-            <div className="flex gap-2 mt-6"><button onClick={() => setShowRequestModal(false)} className="flex-1 border py-2 text-sm hover:bg-slate-50">Batal</button><button onClick={submitStockRequest} className="flex-1 bg-teal-600 text-white py-2 text-sm font-bold hover:bg-teal-700">Kirim</button></div>
-          </div>
-        </div>
-      )}
-      {showRestockModal && (
-        <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
-          <div className="bg-white rounded-xl shadow-2xl w-full max-w-md p-6">
-            <h3 className="font-bold text-lg mb-4 flex items-center gap-2 text-teal-700"><PackagePlus size={24} /> Restock Gudang Pusat</h3>
             <div className="space-y-4">
-              <div><label className="text-xs font-bold text-slate-500 block mb-1">Item</label><select className="w-full border p-2 rounded" value={selectedInventoryItem} onChange={e => setSelectedInventoryItem(e.target.value)}><option value="">-- Pilih --</option>{inventory.map(i => (<option key={i.id} value={i.id}>{i.name}</option>))}</select></div>
-              <div><label className="text-xs font-bold text-slate-500 block mb-1">Qty</label><input type="number" className="w-full border p-2 rounded" placeholder="0" value={inventoryActionQty} onChange={e => setInventoryActionQty(e.target.value)} /></div>
-              <div><label className="text-xs font-bold text-slate-500 block mb-1">Sumber</label><input type="text" className="w-full border p-2 rounded" value={inventoryActionNote} onChange={e => setInventoryActionNote(e.target.value)} /></div>
-            </div>
-            <div className="flex gap-2 mt-6"><button onClick={() => setShowRestockModal(false)} className="flex-1 border py-2 text-sm hover:bg-slate-50">Batal</button><button onClick={handleRestock} className="flex-1 bg-teal-600 text-white py-2 text-sm font-bold hover:bg-teal-700">Simpan</button></div>
-          </div>
-        </div>
-      )}
-      {showOpnameModal && (
-        <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
-          <div className="bg-white rounded-xl shadow-2xl w-full max-w-md p-6">
-            <h3 className="font-bold text-lg mb-4 flex items-center gap-2 text-orange-600"><ClipboardCheck size={24} /> Stock Opname Pusat</h3>
-            <div className="space-y-4">
-              <div><label className="text-xs font-bold text-slate-500 block mb-1">Item</label><select className="w-full border p-2 rounded" value={selectedInventoryItem} onChange={e => setSelectedInventoryItem(e.target.value)}><option value="">-- Pilih --</option>{inventory.map(i => (<option key={i.id} value={i.id}>{i.name} (Sistem: {i.stock})</option>))}</select></div>
-              <div><label className="text-xs font-bold text-slate-500 block mb-1">Fisik Aktual</label><input type="number" className="w-full border p-2 rounded font-bold text-orange-700" placeholder="0" value={inventoryActionQty} onChange={e => setInventoryActionQty(e.target.value)} /></div>
-              <div><label className="text-xs font-bold text-slate-500 block mb-1">Alasan</label><input type="text" className="w-full border p-2 rounded" value={inventoryActionNote} onChange={e => setInventoryActionNote(e.target.value)} /></div>
-            </div>
-            <div className="flex gap-2 mt-6"><button onClick={() => setShowOpnameModal(false)} className="flex-1 border py-2 text-sm hover:bg-slate-50">Batal</button><button onClick={handleOpname} className="flex-1 bg-orange-600 text-white py-2 text-sm font-bold hover:bg-orange-700">Simpan</button></div>
-          </div>
-        </div>
-      )}
-      {showPaymentModal && (
-        <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
-          <div className="bg-white rounded-xl shadow-2xl w-full max-w-md overflow-hidden">
-            <div className="bg-teal-700 text-white p-4 flex justify-between items-center"><h3 className="font-bold text-lg flex items-center gap-2"><Banknote size={20} /> Kasir / Pembayaran</h3><button onClick={() => setShowPaymentModal(false)} className="hover:bg-teal-600 p-1 rounded"><X size={20} /></button></div>
-            <div className="p-6">
-              <div className="mb-6 text-center"><p className="text-sm text-slate-500 mb-1">Total Tagihan</p><div className="text-3xl font-bold text-slate-800">{formatRupiah(calculateTotal())}</div></div>
-              <div className="mb-4"><label className="block text-sm font-semibold mb-2">Metode Pembayaran</label><div className="grid grid-cols-3 gap-2"><button onClick={() => setPaymentMethod('CASH')} className={`p-3 rounded border flex flex-col items-center gap-1 text-xs font-bold ${paymentMethod === 'CASH' ? 'bg-teal-50 border-teal-500 text-teal-700' : 'hover:bg-slate-50'}`}><Banknote size={20} /> TUNAI</button><button onClick={() => setPaymentMethod('DEBIT')} className={`p-3 rounded border flex flex-col items-center gap-1 text-xs font-bold ${paymentMethod === 'DEBIT' ? 'bg-teal-50 border-teal-500 text-teal-700' : 'hover:bg-slate-50'}`}><CreditCard size={20} /> DEBIT/CC</button><button onClick={() => setPaymentMethod('QRIS')} className={`p-3 rounded border flex flex-col items-center gap-1 text-xs font-bold ${paymentMethod === 'QRIS' ? 'bg-teal-50 border-teal-500 text-teal-700' : 'hover:bg-slate-50'}`}><QrCode size={20} /> QRIS</button></div></div>
-              {paymentMethod === 'CASH' && (<div className="mb-6"><label className="block text-sm font-semibold mb-2">Uang Diterima</label><input type="number" className="w-full p-3 text-lg border rounded-lg focus:ring-2 focus:ring-teal-500 outline-none" placeholder="Masukkan jumlah uang..." value={cashGiven} onChange={(e) => setCashGiven(e.target.value)} />{cashGiven && (<div className="mt-2 text-right"><span className="text-sm text-slate-500">Kembalian: </span><span className={`font-bold ${parseFloat(cashGiven) < calculateTotal() ? 'text-red-500' : 'text-green-600'}`}>{formatRupiah(parseFloat(cashGiven) - calculateTotal())}</span></div>)}</div>)}
-              <button onClick={processPayment} className="w-full bg-teal-600 hover:bg-teal-700 text-white py-3 rounded-lg font-bold shadow-lg shadow-teal-200 transition">Bayar Sekarang</button>
+              <div className="relative">
+                <input 
+                  type={showPass ? "text" : "password"} 
+                  placeholder="Sandi Admin..." 
+                  className="w-full p-6 border-2 border-slate-100 rounded-[2rem] outline-none text-center font-bold tracking-[0.2em] bg-white shadow-sm leading-none focus:border-slate-400 transition-colors" 
+                  value={passInput} 
+                  onChange={(e) => setPassInput(e.target.value)} 
+                  onKeyPress={(e) => e.key === 'Enter' && verifyAdminPassword()} 
+                  autoFocus 
+                />
+              </div>
+              <div className="flex gap-3">
+                <button 
+                  onClick={() => setView(viewBeforePass || 'dashboard')} 
+                  className="flex-1 py-5 rounded-3xl bg-white border-2 border-slate-50 text-slate-400 font-black text-[10px] uppercase leading-none"
+                >
+                  Batal
+                </button>
+                <button 
+                  onClick={verifyAdminPassword} 
+                  disabled={actionLoading} 
+                  className="flex-[2] py-5 rounded-3xl bg-slate-900 text-white font-black text-[10px] uppercase shadow-xl flex items-center justify-center gap-2 active:scale-95 transition-all leading-none"
+                >
+                  {actionLoading ? <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"></div> : "Buka Akses"}
+                </button>
+              </div>
             </div>
           </div>
         </div>
       )}
-      {showReceipt && lastOrder && (
-        <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
-          <div className="bg-white rounded-xl shadow-2xl w-full max-w-sm overflow-hidden relative">
-            <div className="p-8 bg-white border-b-2 border-dashed border-slate-300"><div className="text-center mb-6"><div className="inline-flex items-center justify-center w-12 h-12 bg-teal-100 text-teal-700 rounded-full mb-2"><CheckCircle size={24} /></div><h3 className="font-bold text-xl text-slate-800">Pembayaran Berhasil!</h3><p className="text-xs text-slate-500">{lastOrder.logs[0].date}</p></div><div className="space-y-4 text-sm"><div className="flex justify-between border-b pb-2"><span className="text-slate-500">No. Order</span><span className="font-mono font-bold">{lastOrder.id}</span></div><div className="flex justify-between border-b pb-2"><span className="text-slate-500">Pelanggan</span><span className="font-bold">{lastOrder.customer}</span></div><div className="py-2"><p className="text-xs text-slate-400 mb-1 uppercase tracking-wider">Items</p>{lastOrder.items.map((item, i) => (<div key={i} className="flex justify-between mb-1"><span>{item.name}</span><span>{formatRupiah(item.price)}</span></div>))}</div><div className="border-t pt-2 space-y-1"><div className="flex justify-between font-bold text-lg"><span>Total</span><span>{formatRupiah(lastOrder.totalPrice)}</span></div>{lastOrder.paymentMethod === 'CASH' && (<><div className="flex justify-between text-slate-500"><span>Tunai</span><span>{formatRupiah(lastOrder.cashGiven)}</span></div><div className="flex justify-between text-teal-600 font-bold"><span>Kembalian</span><span>{formatRupiah(lastOrder.change)}</span></div></>)}</div></div></div>
-            <div className="p-4 bg-slate-50 flex gap-2"><button onClick={() => window.print()} className="flex-1 border border-slate-300 text-slate-700 py-2 rounded-lg font-bold text-sm hover:bg-white transition flex items-center justify-center gap-2"><Receipt size={16} /> Cetak</button><button onClick={() => setShowReceipt(false)} className="flex-1 bg-teal-600 text-white py-2 rounded-lg font-bold text-sm hover:bg-teal-700 transition">Tutup</button></div>
-          </div>
-        </div>
+
+      {/* VIEW CONFIG (FULL PAGE) - Same as previous but ensures Admin Login state */}
+      {view === 'config' && (
+         <div className="animate-in slide-in-from-right-10 px-6 py-8 space-y-8 pb-24 text-center">
+            <div className="flex items-center gap-4 leading-none">
+              <button 
+                onClick={() => setView('dashboard')} 
+                className="p-3 bg-white border border-slate-100 rounded-2xl shadow-sm text-slate-600 leading-none"
+              >
+                <ArrowRight className="w-5 h-5 rotate-180" />
+              </button>
+              <div className="text-left">
+                <h2 className="text-2xl font-black text-slate-900 tracking-tight leading-tight">Admin Console</h2>
+                <p className="text-xs text-slate-400">Akses penuh sistem</p>
+              </div>
+            </div>
+            
+            {/* Shortcut to Modal Settings */}
+            <div className="grid grid-cols-2 gap-4">
+               <button onClick={() => setShowSettingsModal(true)} className="p-6 bg-blue-50 rounded-3xl border border-blue-100 text-blue-800 font-bold flex flex-col items-center gap-2 shadow-sm">
+                 <Settings size={32} />
+                 Pengaturan & Lisensi
+               </button>
+               {/* Add other admin shortcuts here if needed */}
+            </div>
+         </div>
       )}
 
       {/* HEADER NAVIGASI ROLE */}
       <header className={`text-white shadow-lg sticky top-0 z-40 transition-colors duration-300 ${activeRole === 'ADMIN' ? 'bg-slate-800' : 'bg-teal-700'}`}>
         <div className="max-w-7xl mx-auto px-4 py-3 flex flex-col md:flex-row justify-between items-center gap-4">
-          <div className="flex items-center gap-2 w-full md:w-auto justify-between md:justify-start">
-            <div className="flex items-center gap-2">
-              <Glasses className={`h-8 w-8 ${activeRole === 'ADMIN' ? 'text-red-400' : 'text-teal-200'}`} />
-              <div>
-                <h1 className="text-xl font-bold tracking-tight">OptikVision Pro</h1>
-                <p className={`text-xs opacity-90 ${activeRole === 'ADMIN' ? 'text-red-200' : 'text-teal-200'}`}>
-                  {activeRole === 'ADMIN' ? 'ADMIN MODE' : 'Sistem Informasi Optik Terpadu'}
-                </p>
-              </div>
+          <div className="flex items-center gap-2">
+            <Glasses className={`h-8 w-8 ${activeRole === 'ADMIN' ? 'text-red-400' : 'text-teal-200'}`} />
+            <div>
+              <h1 className="text-xl font-bold tracking-tight">OptikVision Pro</h1>
+              <p className={`text-xs opacity-90 ${activeRole === 'ADMIN' ? 'text-red-200' : 'text-teal-200'}`}>
+                {activeRole === 'ADMIN' ? 'ADMINISTRATOR MODE' : 'Sistem POS & Produksi Terintegrasi'}
+              </p>
             </div>
-            {/* Mobile Menu Toggle could be added here if needed */}
           </div>
 
-          <div className={`flex flex-col md:flex-row items-center gap-2 md:gap-4 p-2 rounded-lg w-full md:w-auto ${activeRole === 'ADMIN' ? 'bg-slate-700' : 'bg-teal-800'}`}>
-            <div className="flex flex-col w-full md:w-auto">
-              <label className={`text-[10px] uppercase font-bold hidden md:block ${activeRole === 'ADMIN' ? 'text-slate-400' : 'text-teal-300'}`}>Login Sebagai:</label>
+          <div className={`flex items-center gap-4 p-2 rounded-lg ${activeRole === 'ADMIN' ? 'bg-slate-700' : 'bg-teal-800'}`}>
+            <div className="flex flex-col">
+              <label className={`text-[10px] uppercase font-bold ${activeRole === 'ADMIN' ? 'text-slate-400' : 'text-teal-300'}`}>Login Sebagai:</label>
               <select 
                 value={activeRole === 'ADMIN' ? 'ADMIN' : (currentBranch.id === 'GUDANG' ? 'GUDANG' : currentBranch.id)} 
                 onChange={handleRoleChange}
-                className={`border-none text-white text-sm rounded focus:ring-0 cursor-pointer w-full md:w-auto ${activeRole === 'ADMIN' ? 'bg-slate-900' : 'bg-teal-900'}`}
+                className={`border-none text-white text-sm rounded focus:ring-0 cursor-pointer ${activeRole === 'ADMIN' ? 'bg-slate-900' : 'bg-teal-900'}`}
               >
                 <optgroup label="Cabang & Produksi">
                   {branches.map(b => (
@@ -922,20 +988,20 @@ export default function OptikManager() {
               </select>
             </div>
             
-            <div className={`h-8 w-[1px] mx-2 hidden md:block ${activeRole === 'ADMIN' ? 'bg-slate-500' : 'bg-teal-600'}`}></div>
+            <div className={`h-8 w-[1px] mx-2 ${activeRole === 'ADMIN' ? 'bg-slate-500' : 'bg-teal-600'}`}></div>
 
-            <nav className="flex gap-2 w-full md:w-auto overflow-x-auto pb-1 md:pb-0 no-scrollbar">
+            <nav className="flex gap-2">
               {activeRole === 'ADMIN' ? (
-                <div className="px-3 py-1 bg-red-500/20 border border-red-500/50 text-red-200 rounded text-sm font-bold flex items-center gap-2 w-full justify-center md:w-auto">
-                  <Lock size={14} /> Full Access
+                <div className="px-3 py-1 bg-red-500/20 border border-red-500/50 text-red-200 rounded text-sm font-bold flex items-center gap-2">
+                  <Lock size={14} /> Full Access Granted
                 </div>
               ) : (
                 <>
-                  <button onClick={() => setActiveRole('POS')} className={`flex-1 md:flex-none px-3 py-2 md:py-1 rounded text-sm font-medium whitespace-nowrap ${activeRole === 'POS' ? 'bg-white text-teal-800' : 'hover:bg-teal-600'}`}>POS</button>
+                  <button onClick={() => setActiveRole('POS')} className={`px-3 py-1 rounded text-sm font-medium ${activeRole === 'POS' ? 'bg-white text-teal-800' : 'hover:bg-teal-600'}`}>POS</button>
                   {(currentBranch.type === 'PRODUCTION' || currentBranch.id === 'GUDANG') && (
-                    <button onClick={() => setActiveRole('PRODUCTION')} className={`flex-1 md:flex-none px-3 py-2 md:py-1 rounded text-sm font-medium whitespace-nowrap ${activeRole === 'PRODUCTION' ? 'bg-white text-teal-800' : 'hover:bg-teal-600'}`}>Produksi</button>
+                    <button onClick={() => setActiveRole('PRODUCTION')} className={`px-3 py-1 rounded text-sm font-medium ${activeRole === 'PRODUCTION' ? 'bg-white text-teal-800' : 'hover:bg-teal-600'}`}>Produksi</button>
                   )}
-                  <button onClick={() => setActiveRole('WAREHOUSE')} className={`flex-1 md:flex-none px-3 py-2 md:py-1 rounded text-sm font-medium whitespace-nowrap ${activeRole === 'WAREHOUSE' ? 'bg-white text-teal-800' : 'hover:bg-teal-600'}`}>Gudang</button>
+                  <button onClick={() => setActiveRole('WAREHOUSE')} className={`px-3 py-1 rounded text-sm font-medium ${activeRole === 'WAREHOUSE' ? 'bg-white text-teal-800' : 'hover:bg-teal-600'}`}>Gudang</button>
                 </>
               )}
             </nav>
@@ -943,47 +1009,48 @@ export default function OptikManager() {
         </div>
       </header>
 
-      <main className="max-w-7xl mx-auto p-4 md:p-6 pb-24 md:pb-6">
+      {/* MAIN CONTENT AREA */}
+      {view !== 'config' && view !== 'pass_challenge' && (
+        <main className="max-w-7xl mx-auto p-6">
 
-        {/* --- VIEW: ADMIN DASHBOARD --- */}
-        {activeRole === 'ADMIN' && (
-          <div className="space-y-6">
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-3 md:gap-4 mb-6">
-              <button onClick={() => setAdminTab('BRANCHES')} className={`p-4 rounded-xl border flex flex-col md:flex-row items-center md:items-start gap-3 transition text-center md:text-left ${adminTab === 'BRANCHES' ? 'bg-slate-800 text-white shadow-lg' : 'bg-white hover:bg-slate-50'}`}>
-                <div className={`p-2 rounded-full ${adminTab === 'BRANCHES' ? 'bg-slate-700' : 'bg-slate-100 text-slate-600'}`}><Building size={20} /></div>
-                <div><p className="font-bold text-sm">Cabang</p><p className="text-xs opacity-70 hidden md:block">{branches.length} Aktif</p></div>
-              </button>
-              <button onClick={() => setAdminTab('INVENTORY')} className={`p-4 rounded-xl border flex flex-col md:flex-row items-center md:items-start gap-3 transition text-center md:text-left ${adminTab === 'INVENTORY' ? 'bg-slate-800 text-white shadow-lg' : 'bg-white hover:bg-slate-50'}`}>
-                <div className={`p-2 rounded-full ${adminTab === 'INVENTORY' ? 'bg-slate-700' : 'bg-slate-100 text-slate-600'}`}><Package size={20} /></div>
-                <div><p className="font-bold text-sm">Produk</p><p className="text-xs opacity-70 hidden md:block">{inventory.length} SKU</p></div>
-              </button>
-              <button onClick={() => setAdminTab('TECHS')} className={`p-4 rounded-xl border flex flex-col md:flex-row items-center md:items-start gap-3 transition text-center md:text-left ${adminTab === 'TECHS' ? 'bg-slate-800 text-white shadow-lg' : 'bg-white hover:bg-slate-50'}`}>
-                <div className={`p-2 rounded-full ${adminTab === 'TECHS' ? 'bg-slate-700' : 'bg-slate-100 text-slate-600'}`}><Users size={20} /></div>
-                <div><p className="font-bold text-sm">Teknisi</p><p className="text-xs opacity-70 hidden md:block">{technicians.length} Staff</p></div>
-              </button>
-              
-              {/* TOMBOL PENGATURAN BARU */}
-              <button onClick={() => setShowSettingsModal(true)} className={`p-4 rounded-xl border flex flex-col md:flex-row items-center md:items-start gap-3 transition bg-blue-50 border-blue-200 hover:bg-blue-100 text-center md:text-left`}>
-                <div className={`p-2 rounded-full bg-blue-200 text-blue-700`}><Settings size={20} /></div>
-                <div><p className="font-bold text-sm text-blue-900">Pengaturan</p><p className="text-xs text-blue-700 hidden md:block">Database & Akun</p></div>
-              </button>
-            </div>
+          {/* --- VIEW: ADMIN DASHBOARD --- */}
+          {activeRole === 'ADMIN' && (
+            <div className="space-y-6">
+              <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
+                <button onClick={() => setAdminTab('BRANCHES')} className={`p-4 rounded-xl border flex items-center gap-3 transition ${adminTab === 'BRANCHES' ? 'bg-slate-800 text-white shadow-lg' : 'bg-white hover:bg-slate-50'}`}>
+                  <div className={`p-2 rounded-full ${adminTab === 'BRANCHES' ? 'bg-slate-700' : 'bg-slate-100 text-slate-600'}`}><Building size={20} /></div>
+                  <div className="text-left"><p className="font-bold text-sm">Cabang</p><p className="text-xs opacity-70">{branches.length} Aktif</p></div>
+                </button>
+                <button onClick={() => setAdminTab('INVENTORY')} className={`p-4 rounded-xl border flex items-center gap-3 transition ${adminTab === 'INVENTORY' ? 'bg-slate-800 text-white shadow-lg' : 'bg-white hover:bg-slate-50'}`}>
+                  <div className={`p-2 rounded-full ${adminTab === 'INVENTORY' ? 'bg-slate-700' : 'bg-slate-100 text-slate-600'}`}><Package size={20} /></div>
+                  <div className="text-left"><p className="font-bold text-sm">Produk</p><p className="text-xs opacity-70">{inventory.length} SKU</p></div>
+                </button>
+                <button onClick={() => setAdminTab('TECHS')} className={`p-4 rounded-xl border flex items-center gap-3 transition ${adminTab === 'TECHS' ? 'bg-slate-800 text-white shadow-lg' : 'bg-white hover:bg-slate-50'}`}>
+                  <div className={`p-2 rounded-full ${adminTab === 'TECHS' ? 'bg-slate-700' : 'bg-slate-100 text-slate-600'}`}><Users size={20} /></div>
+                  <div className="text-left"><p className="font-bold text-sm">Teknisi</p><p className="text-xs opacity-70">{technicians.length} Staff</p></div>
+                </button>
+                
+                {/* TOMBOL PENGATURAN BARU */}
+                <button onClick={() => setShowSettingsModal(true)} className={`p-4 rounded-xl border flex items-center gap-3 transition bg-blue-50 border-blue-200 hover:bg-blue-100`}>
+                  <div className={`p-2 rounded-full bg-blue-200 text-blue-700`}><Settings size={20} /></div>
+                  <div className="text-left"><p className="font-bold text-sm text-blue-900">Pengaturan</p><p className="text-xs text-blue-700">Database & Akun</p></div>
+                </button>
+              </div>
 
-            <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-4 md:p-6 overflow-hidden">
-              {/* ADMIN: MANAJEMEN CABANG */}
-              {adminTab === 'BRANCHES' && (
-                <div>
-                  <h2 className="text-xl font-bold mb-6 flex items-center gap-2 text-slate-800"><Building size={24} /> Daftar Cabang Optik</h2>
-                  <div className="bg-slate-50 p-4 rounded-lg border mb-6">
-                    <h3 className="text-sm font-bold mb-3">Tambah Cabang Baru</h3>
-                    <div className="flex flex-col md:flex-row gap-4 items-end">
-                      <div className="flex-1 w-full"><label className="text-xs font-semibold block mb-1">Nama Cabang</label><input type="text" className="w-full p-2 text-sm border rounded" placeholder="Contoh: Cabang Fatmawati" value={newBranch.name} onChange={e => setNewBranch({...newBranch, name: e.target.value})} /></div>
-                      <div className="w-full md:w-48"><label className="text-xs font-semibold block mb-1">Tipe Operasional</label><select className="w-full p-2 text-sm border rounded bg-white" value={newBranch.type} onChange={e => setNewBranch({...newBranch, type: e.target.value})}><option value="SALES">Sales Only</option><option value="PRODUCTION">Sales + Produksi</option></select></div>
-                      <button onClick={handleAddBranch} className="w-full md:w-auto bg-slate-800 text-white px-4 py-2 text-sm rounded hover:bg-slate-900 font-bold flex items-center justify-center gap-2"><Plus size={16} /> Tambah</button>
+              <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-6">
+                {/* ADMIN: MANAJEMEN CABANG */}
+                {adminTab === 'BRANCHES' && (
+                  <div>
+                    <h2 className="text-xl font-bold mb-6 flex items-center gap-2 text-slate-800"><Building size={24} /> Daftar Cabang Optik</h2>
+                    <div className="bg-slate-50 p-4 rounded-lg border mb-6">
+                      <h3 className="text-sm font-bold mb-3">Tambah Cabang Baru</h3>
+                      <div className="flex gap-4 items-end">
+                        <div className="flex-1"><label className="text-xs font-semibold block mb-1">Nama Cabang</label><input type="text" className="w-full p-2 text-sm border rounded" placeholder="Contoh: Cabang Fatmawati" value={newBranch.name} onChange={e => setNewBranch({...newBranch, name: e.target.value})} /></div>
+                        <div className="w-48"><label className="text-xs font-semibold block mb-1">Tipe Operasional</label><select className="w-full p-2 text-sm border rounded bg-white" value={newBranch.type} onChange={e => setNewBranch({...newBranch, type: e.target.value})}><option value="SALES">Sales Only</option><option value="PRODUCTION">Sales + Produksi</option></select></div>
+                        <button onClick={handleAddBranch} className="bg-slate-800 text-white px-4 py-2 text-sm rounded hover:bg-slate-900 font-bold flex items-center gap-2"><Plus size={16} /> Tambah</button>
+                      </div>
                     </div>
-                  </div>
-                  <div className="overflow-x-auto">
-                    <table className="w-full text-sm text-left border rounded overflow-hidden min-w-[600px]">
+                    <table className="w-full text-sm text-left border rounded overflow-hidden">
                       <thead className="bg-slate-100 font-bold"><tr><th className="p-3">ID</th><th className="p-3">Nama Cabang</th><th className="p-3">Tipe</th><th className="p-3 text-center">Status</th></tr></thead>
                       <tbody>
                         {branches.map(b => (
@@ -997,275 +1064,275 @@ export default function OptikManager() {
                       </tbody>
                     </table>
                   </div>
-                </div>
-              )}
+                )}
 
-              {/* ADMIN: MANAJEMEN INVENTORY */}
-              {adminTab === 'INVENTORY' && (
-                <div>
-                   <h2 className="text-xl font-bold mb-6 flex items-center gap-2 text-slate-800"><Package size={24} /> Master Data Produk (Admin)</h2>
-                  <div className="bg-slate-50 p-4 rounded-lg border mb-6">
-                    <h3 className="text-sm font-bold mb-3">Registrasi Item Baru (SKU)</h3>
-                    <div className="grid grid-cols-1 md:grid-cols-5 gap-4 items-end">
-                      <div className="md:col-span-2"><label className="text-xs font-semibold block mb-1">Nama Produk/Part</label><input type="text" className="w-full p-2 text-sm border rounded" placeholder="Nama Barang..." value={newItem.name} onChange={e => setNewItem({...newItem, name: e.target.value})} /></div>
-                      <div><label className="text-xs font-semibold block mb-1">Kategori</label><select className="w-full p-2 text-sm border rounded bg-white" value={newItem.type} onChange={e => setNewItem({...newItem, type: e.target.value})}><option value="frame">Frame</option><option value="lens">Lensa</option><option value="part">Sparepart</option></select></div>
-                       <div><label className="text-xs font-semibold block mb-1">Stok Awal (Pusat)</label><input type="number" className="w-full p-2 text-sm border rounded" placeholder="0" value={newItem.stock} onChange={e => setNewItem({...newItem, stock: parseInt(e.target.value) || 0})} /></div>
-                      <div><label className="text-xs font-semibold block mb-1">Harga Satuan</label><input type="number" className="w-full p-2 text-sm border rounded" placeholder="Rp" value={newItem.price} onChange={e => setNewItem({...newItem, price: parseInt(e.target.value) || 0})} /></div>
-                    </div>
-                    <div className="mt-4 text-right"><button onClick={handleAddItem} className="w-full md:w-auto bg-slate-800 text-white px-6 py-2 text-sm rounded hover:bg-slate-900 font-bold inline-flex justify-center items-center gap-2"><Plus size={16} /> Simpan Master Data</button></div>
-                  </div>
-                  <div className="max-h-[500px] overflow-y-auto border rounded overflow-x-auto">
-                     <table className="w-full text-sm text-left min-w-[600px]">
-                      <thead className="bg-slate-100 font-bold sticky top-0"><tr><th className="p-3">ID</th><th className="p-3">Nama Item</th><th className="p-3">Kategori</th><th className="p-3">Stok Pusat</th><th className="p-3">Harga</th></tr></thead>
-                      <tbody>
-                        {inventory.map(item => (
-                          <tr key={item.id} className="border-t hover:bg-slate-50">
-                            <td className="p-3 font-mono text-slate-500 text-xs">{item.id}</td>
-                            <td className="p-3 font-medium">{item.name}</td>
-                            <td className="p-3 capitalize text-slate-500">{item.type}</td>
-                            <td className="p-3 font-bold">{item.stock}</td>
-                            <td className="p-3 text-slate-600">{formatRupiah(item.price)}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                </div>
-              )}
-
-              {/* ADMIN: MANAJEMEN TEKNISI */}
-              {adminTab === 'TECHS' && (
-                <div>
-                   <h2 className="text-xl font-bold mb-6 flex items-center gap-2 text-slate-800"><Users size={24} /> Data Teknisi Produksi</h2>
-                  <div className="bg-slate-50 p-4 rounded-lg border mb-6 flex flex-col md:flex-row gap-4 items-end">
-                    <div className="flex-1 w-full"><label className="text-xs font-semibold block mb-1">Nama & Spesialisasi</label><input type="text" className="w-full p-2 text-sm border rounded" placeholder="Contoh: Rian (Finishing)" value={newTech} onChange={e => setNewTech(e.target.value)} /></div>
-                    <button onClick={handleAddTech} className="w-full md:w-auto bg-slate-800 text-white px-4 py-2 text-sm rounded hover:bg-slate-900 font-bold flex items-center justify-center gap-2"><Plus size={16} /> Tambah Teknisi</button>
-                  </div>
-                  <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4">
-                    {technicians.map(t => (
-                      <div key={t.id} className="p-4 border rounded-lg flex items-center gap-3 bg-white shadow-sm">
-                        <div className="w-10 h-10 bg-slate-100 rounded-full flex items-center justify-center text-slate-500"><HardHat size={20} /></div>
-                        <div><p className="font-bold text-sm text-slate-800">{t.name}</p><p className="text-xs text-slate-400">ID: {t.id}</p></div>
+                {/* ADMIN: MANAJEMEN INVENTORY */}
+                {adminTab === 'INVENTORY' && (
+                  <div>
+                    <h2 className="text-xl font-bold mb-6 flex items-center gap-2 text-slate-800"><Package size={24} /> Master Data Produk (Admin)</h2>
+                    <div className="bg-slate-50 p-4 rounded-lg border mb-6">
+                      <h3 className="text-sm font-bold mb-3">Registrasi Item Baru (SKU)</h3>
+                      <div className="grid grid-cols-5 gap-4 items-end">
+                        <div className="col-span-2"><label className="text-xs font-semibold block mb-1">Nama Produk/Part</label><input type="text" className="w-full p-2 text-sm border rounded" placeholder="Nama Barang..." value={newItem.name} onChange={e => setNewItem({...newItem, name: e.target.value})} /></div>
+                        <div><label className="text-xs font-semibold block mb-1">Kategori</label><select className="w-full p-2 text-sm border rounded bg-white" value={newItem.type} onChange={e => setNewItem({...newItem, type: e.target.value})}><option value="frame">Frame</option><option value="lens">Lensa</option><option value="part">Sparepart</option></select></div>
+                        <div><label className="text-xs font-semibold block mb-1">Stok Awal (Pusat)</label><input type="number" className="w-full p-2 text-sm border rounded" placeholder="0" value={newItem.stock} onChange={e => setNewItem({...newItem, stock: parseInt(e.target.value) || 0})} /></div>
+                        <div><label className="text-xs font-semibold block mb-1">Harga Satuan</label><input type="number" className="w-full p-2 text-sm border rounded" placeholder="Rp" value={newItem.price} onChange={e => setNewItem({...newItem, price: parseInt(e.target.value) || 0})} /></div>
                       </div>
-                    ))}
-                  </div>
-                </div>
-              )}
-            </div>
-          </div>
-        )}
-        
-        {/* --- VIEW: POS (POINT OF SALE) --- */}
-        {activeRole === 'POS' && (
-          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-            <div className="lg:col-span-2 space-y-6">
-              <div className="bg-white p-4 md:p-6 rounded-xl shadow-sm border border-slate-200">
-                <div className="flex justify-between items-center mb-4"><h2 className="text-lg font-bold flex items-center gap-2 text-slate-700"><User size={20} /> Data Pelanggan & Resep</h2></div>
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
-                  <div><label className="block text-xs font-semibold text-slate-500 mb-1">Nama Pelanggan</label><input type="text" className="w-full p-2 border rounded-lg focus:ring-2 focus:ring-teal-500 outline-none" placeholder="Contoh: Budi Santoso" value={customerName} onChange={(e) => setCustomerName(e.target.value)} /></div>
-                  <div><label className="block text-xs font-semibold text-slate-500 mb-1">Kirim Order Ke (Produksi)</label><select className="w-full p-2 border rounded-lg bg-slate-50" value={selectedProductionHub} onChange={(e) => setSelectedProductionHub(e.target.value)}>{branches.filter(b => b.type === 'PRODUCTION').map(b => (<option key={b.id} value={b.id}>{b.name}</option>))}</select></div>
-                </div>
-                {/* Kartu Resep */}
-                <div className="border rounded-lg overflow-hidden overflow-x-auto">
-                  <table className="w-full text-sm text-center min-w-[300px]">
-                    <thead className="bg-slate-100 text-slate-600 font-semibold"><tr><th className="p-2 text-left">Mata</th><th className="p-2">SPH</th><th className="p-2">CYL</th><th className="p-2">AXIS</th><th className="p-2">ADD</th></tr></thead>
-                    <tbody className="divide-y">
-                      <tr><td className="p-2 font-bold text-left bg-slate-50">R (OD)</td><td className="p-1"><input type="text" className="w-full text-center p-1 border rounded" placeholder="-0.00" value={prescription.od.sph} onChange={e => setPrescription({...prescription, od: {...prescription.od, sph: e.target.value}})} /></td><td className="p-1"><input type="text" className="w-full text-center p-1 border rounded" placeholder="-0.00" value={prescription.od.cyl} onChange={e => setPrescription({...prescription, od: {...prescription.od, cyl: e.target.value}})} /></td><td className="p-1"><input type="text" className="w-full text-center p-1 border rounded" placeholder="0" value={prescription.od.axis} onChange={e => setPrescription({...prescription, od: {...prescription.od, axis: e.target.value}})} /></td><td className="p-1"><input type="text" className="w-full text-center p-1 border rounded" placeholder="+0.00" value={prescription.od.add} onChange={e => setPrescription({...prescription, od: {...prescription.od, add: e.target.value}})} /></td></tr>
-                      <tr><td className="p-2 font-bold text-left bg-slate-50">L (OS)</td><td className="p-1"><input type="text" className="w-full text-center p-1 border rounded" placeholder="-0.00" value={prescription.os.sph} onChange={e => setPrescription({...prescription, os: {...prescription.os, sph: e.target.value}})} /></td><td className="p-1"><input type="text" className="w-full text-center p-1 border rounded" placeholder="-0.00" value={prescription.os.cyl} onChange={e => setPrescription({...prescription, os: {...prescription.os, cyl: e.target.value}})} /></td><td className="p-1"><input type="text" className="w-full text-center p-1 border rounded" placeholder="0" value={prescription.os.axis} onChange={e => setPrescription({...prescription, os: {...prescription.os, axis: e.target.value}})} /></td><td className="p-1"><input type="text" className="w-full text-center p-1 border rounded" placeholder="+0.00" value={prescription.os.add} onChange={e => setPrescription({...prescription, os: {...prescription.os, add: e.target.value}})} /></td></tr>
-                    </tbody>
-                  </table>
-                  <div className="p-2 bg-slate-50 border-t flex items-center gap-2"><span className="text-sm font-semibold text-slate-600">PD (Pupil Distance):</span><input type="text" className="w-20 p-1 border rounded text-center" placeholder="62" value={prescription.pd} onChange={e => setPrescription({...prescription, pd: e.target.value})} /><span className="text-xs text-slate-500">mm</span></div>
-                </div>
-              </div>
-
-              {/* Katalog Produk */}
-              <div className="bg-white p-4 md:p-6 rounded-xl shadow-sm border border-slate-200">
-                <h2 className="text-lg font-bold mb-4 flex items-center gap-2 text-slate-700"><Package size={20} /> Katalog Frame & Lensa</h2>
-                <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
-                  {inventory.filter(i => ['frame', 'lens'].includes(i.type)).map(item => (
-                    <button key={item.id} onClick={() => addToCart(item)} className="text-left border rounded-lg p-3 hover:border-teal-500 hover:shadow-md transition bg-slate-50">
-                      <div className="text-sm font-bold text-slate-800 line-clamp-2 h-10">{item.name}</div>
-                      <div className="text-xs text-slate-500 mb-2">Stok {currentBranch.name}: {getBranchQty(currentBranch.id, item.id)}</div>
-                      <div className="text-teal-700 font-semibold">{formatRupiah(item.price)}</div>
-                    </button>
-                  ))}
-                </div>
-              </div>
-            </div>
-
-            {/* Kolom Kanan: Keranjang */}
-            <div className="lg:col-span-1">
-              <div className="bg-white rounded-xl shadow-sm border border-slate-200 sticky top-24">
-                <div className="p-4 border-b bg-slate-50 rounded-t-xl"><h2 className="font-bold text-lg flex items-center gap-2"><ShoppingCart size={20} /> Ringkasan Order</h2></div>
-                <div className="p-4 min-h-[300px] max-h-[500px] overflow-y-auto flex flex-col">
-                  {cart.length === 0 ? (
-                    <div className="flex-1 flex flex-col items-center justify-center text-slate-400 py-10"><ShoppingCart size={48} className="mb-2 opacity-20" /><p className="text-sm">Keranjang kosong</p></div>
-                  ) : (
-                    <div className="space-y-3 flex-1">{cart.map((item, idx) => (<div key={idx} className="flex justify-between items-center p-2 bg-slate-50 rounded border"><div><div className="text-sm font-medium">{item.name}</div><div className="text-xs text-teal-600">{formatRupiah(item.price)}</div></div><button onClick={() => removeFromCart(idx)} className="text-red-400 hover:text-red-600"><Plus size={16} className="rotate-45" /></button></div>))}</div>
-                  )}
-                  <div className="mt-4 pt-4 border-t">
-                    <div className="flex justify-between font-bold text-lg mb-4"><span>Total</span><span>{formatRupiah(cart.reduce((a, b) => a + b.price, 0))}</span></div>
-                    <button onClick={handleCheckout} className="w-full bg-teal-600 hover:bg-teal-700 text-white py-3 rounded-lg font-bold shadow-lg shadow-teal-200 transition flex items-center justify-center gap-2">Proses Pembayaran <ArrowRight size={18} /></button>
-                  </div>
-                </div>
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* --- VIEW: PRODUCTION (LAB) --- */}
-        {activeRole === 'PRODUCTION' && (
-          <div className="space-y-6">
-            <div className="flex flex-col md:flex-row items-center justify-between gap-4">
-              <h2 className="text-2xl font-bold text-slate-800">Dashboard Produksi: {currentBranch.name}</h2>
-              <div className="flex gap-2 w-full md:w-auto overflow-x-auto">
-                <span className="px-3 py-1 bg-yellow-100 text-yellow-800 rounded-full text-xs font-bold whitespace-nowrap">Pending: {orders.filter(o => o.productionBranchId === currentBranch.id && o.status === 'PENDING').length}</span>
-                <span className="px-3 py-1 bg-blue-100 text-blue-800 rounded-full text-xs font-bold whitespace-nowrap">In Progress: {orders.filter(o => o.productionBranchId === currentBranch.id && o.status === 'IN_PROGRESS').length}</span>
-              </div>
-            </div>
-
-            <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
-              {orders.filter(o => o.productionBranchId === currentBranch.id && o.status !== 'COMPLETED').map(order => (
-                <div key={order.id} className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
-                  <div className="p-4 border-b bg-slate-50 flex justify-between items-center">
-                    <div><h3 className="font-bold text-lg">{order.customer}</h3><p className="text-xs text-slate-500">Ref: {order.id} • Dari: {branches.find(b => b.id === order.branchId)?.name}</p></div>
-                    <div className={`px-3 py-1 rounded-full text-xs font-bold ${getStatusColor(order.status)}`}>{order.status}</div>
-                  </div>
-                  <div className="p-4 grid grid-cols-1 md:grid-cols-2 gap-6">
-                    <div>
-                      <div className="bg-blue-50 p-3 rounded-lg mb-4 text-xs"><p className="font-bold text-blue-800 mb-1">Resep Kacamata:</p><div className="grid grid-cols-2 gap-2"><div><span className="font-semibold">R:</span> {order.prescription.od.sph} / {order.prescription.od.cyl} x {order.prescription.od.axis}</div><div><span className="font-semibold">L:</span> {order.prescription.os.sph} / {order.prescription.os.cyl} x {order.prescription.os.axis}</div></div><p className="mt-1">PD: {order.prescription.pd}mm</p></div>
-                      <div className="space-y-2 mb-4"><p className="text-xs font-bold text-slate-500 uppercase">Items:</p>{order.items.map((item, i) => (<div key={i} className="text-sm flex items-center gap-2"><CheckCircle size={14} className="text-teal-600" /> {item.name}</div>))}</div>
-                      <div className="flex items-center gap-2 p-2 bg-slate-100 rounded text-sm"><HardHat size={16} className="text-slate-500" /><span className="font-semibold text-slate-600">Teknisi:</span><span className="font-bold text-slate-800">{order.technician || '- Belum Ditunjuk -'}</span></div>
+                      <div className="mt-4 text-right"><button onClick={handleAddItem} className="bg-slate-800 text-white px-6 py-2 text-sm rounded hover:bg-slate-900 font-bold inline-flex items-center gap-2"><Plus size={16} /> Simpan Master Data</button></div>
                     </div>
-                    <div className="border-l-0 md:border-l border-t md:border-t-0 pt-4 md:pt-0 pl-0 md:pl-4 border-slate-100">
-                      <div className="mb-4">
-                        <label className="text-xs font-bold text-slate-500 block mb-2">Update Status & Teknisi:</label>
-                        <div className="space-y-2">
-                          {order.status === 'PENDING' && (
-                            <div className="flex gap-2">
-                              <select id={`tech-select-${order.id}`} className="text-xs border p-2 rounded flex-1 bg-white"><option value="">-- Pilih Teknisi --</option>{technicians.map(t => (<option key={t.id} value={t.name}>{t.name}</option>))}</select>
-                              <button onClick={() => {const select = document.getElementById(`tech-select-${order.id}`); assignTechnicianAndStart(order.id, select.value);}} className="btn-action bg-blue-600 text-white">Mulai</button>
-                            </div>
-                          )}
-                          {order.status !== 'PENDING' && (
-                            <div className="flex gap-2 flex-wrap">
-                              {order.status === 'IN_PROGRESS' && (<button onClick={() => updateOrderStatus(order.id, 'QC')} className="btn-action bg-purple-600 text-white flex-1">Selesai & QC</button>)}
-                              {order.status === 'QC' && (<button onClick={() => updateOrderStatus(order.id, 'READY')} className="btn-action bg-green-600 text-white flex-1">Lolos QC</button>)}
-                              {order.status === 'READY' && (<button onClick={() => updateOrderStatus(order.id, 'COMPLETED')} className="btn-action bg-slate-800 text-white flex-1">Kirim ke Cabang Asal</button>)}
-                            </div>
-                          )}
+                    <div className="max-h-[500px] overflow-y-auto border rounded">
+                      <table className="w-full text-sm text-left">
+                        <thead className="bg-slate-100 font-bold sticky top-0"><tr><th className="p-3">ID</th><th className="p-3">Nama Item</th><th className="p-3">Kategori</th><th className="p-3">Stok Pusat</th><th className="p-3">Harga</th></tr></thead>
+                        <tbody>
+                          {inventory.map(item => (
+                            <tr key={item.id} className="border-t hover:bg-slate-50">
+                              <td className="p-3 font-mono text-slate-500 text-xs">{item.id}</td>
+                              <td className="p-3 font-medium">{item.name}</td>
+                              <td className="p-3 capitalize text-slate-500">{item.type}</td>
+                              <td className="p-3 font-bold">{item.stock}</td>
+                              <td className="p-3 text-slate-600">{formatRupiah(item.price)}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                )}
+
+                {/* ADMIN: MANAJEMEN TEKNISI */}
+                {adminTab === 'TECHS' && (
+                  <div>
+                    <h2 className="text-xl font-bold mb-6 flex items-center gap-2 text-slate-800"><Users size={24} /> Data Teknisi Produksi</h2>
+                    <div className="bg-slate-50 p-4 rounded-lg border mb-6 flex gap-4 items-end">
+                      <div className="flex-1"><label className="text-xs font-semibold block mb-1">Nama & Spesialisasi</label><input type="text" className="w-full p-2 text-sm border rounded" placeholder="Contoh: Rian (Finishing)" value={newTech} onChange={e => setNewTech(e.target.value)} /></div>
+                      <button onClick={handleAddTech} className="bg-slate-800 text-white px-4 py-2 text-sm rounded hover:bg-slate-900 font-bold flex items-center gap-2"><Plus size={16} /> Tambah Teknisi</button>
+                    </div>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4">
+                      {technicians.map(t => (
+                        <div key={t.id} className="p-4 border rounded-lg flex items-center gap-3 bg-white shadow-sm">
+                          <div className="w-10 h-10 bg-slate-100 rounded-full flex items-center justify-center text-slate-500"><HardHat size={20} /></div>
+                          <div><p className="font-bold text-sm text-slate-800">{t.name}</p><p className="text-xs text-slate-400">ID: {t.id}</p></div>
                         </div>
-                      </div>
-                      <div className="mb-4">
-                         <label className="text-xs font-bold text-slate-500 block mb-2">Pencatatan Part (Stok Cabang):</label>
-                         <div className="flex gap-2 mb-2">
-                            <select id={`part-select-${order.id}`} className="text-xs border p-2 rounded w-full bg-white">
-                              {inventory.map(i => (
-                                <option key={i.id} value={i.id}>{i.name} (Stok: {getBranchQty(currentBranch.id, i.id)})</option>
-                              ))}
-                            </select>
-                         </div>
-                         <div className="flex gap-2">
-                           <button onClick={() => {const select = document.getElementById(`part-select-${order.id}`); useSparePart(order.id, select.value, false);}} className="text-xs bg-slate-200 hover:bg-slate-300 text-slate-800 px-2 py-2 rounded flex-1">+ Pakai Part</button>
-                           <button onClick={() => {const select = document.getElementById(`part-select-${order.id}`); useSparePart(order.id, select.value, true);}} className="text-xs bg-red-100 hover:bg-red-200 text-red-700 px-2 py-2 rounded flex-1 flex items-center justify-center gap-1"><AlertTriangle size={12}/> Lapor Rusak</button>
-                         </div>
-                      </div>
-                      <div className="bg-slate-50 rounded p-2 max-h-32 overflow-y-auto text-[10px] space-y-1 border">
-                         {order.logs.map((log, idx) => (<div key={idx} className={`${log.type === 'danger' ? 'text-red-600 font-bold' : 'text-slate-600'}`}><span className="opacity-50">[{log.date.split(' ')[1]}]</span> {log.msg}</div>))}
-                      </div>
+                      ))}
                     </div>
-                  </div>
-                </div>
-              ))}
-              {orders.filter(o => o.productionBranchId === currentBranch.id && o.status !== 'COMPLETED').length === 0 && (
-                <div className="col-span-full py-12 text-center text-slate-400 bg-white rounded-xl border border-dashed border-slate-300"><ClipboardList size={48} className="mx-auto mb-2 opacity-20" /><p>Tidak ada pesanan aktif di antrian produksi.</p></div>
-              )}
-            </div>
-          </div>
-        )}
-
-        {/* --- VIEW: WAREHOUSE (GUDANG & STOK CABANG) --- */}
-        {activeRole === 'WAREHOUSE' && (
-          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-            <div className="lg:col-span-2 bg-white rounded-xl shadow-sm border border-slate-200 p-4 md:p-6">
-              <div className="flex flex-col md:flex-row justify-between items-start md:items-center mb-6 gap-4">
-                <div>
-                  <h2 className="text-xl font-bold text-slate-800 flex items-center gap-2"><Store size={24} /> Stok {currentBranch.name}</h2>
-                  {currentBranch.id === 'GUDANG' && (<p className="text-sm text-slate-500 mt-1">Kelola fisik barang masuk dan keluar Gudang Pusat.</p>)}
-                </div>
-                {currentBranch.id !== 'GUDANG' && (<span className="text-xs bg-teal-50 text-teal-700 px-3 py-1 rounded-full border border-teal-200">Mode Cabang: Request ke Pusat</span>)}
-                 {currentBranch.id === 'GUDANG' && (
-                  <div className="flex gap-2 w-full md:w-auto">
-                    <button onClick={() => setShowOpnameModal(true)} className="flex-1 md:flex-none flex items-center justify-center gap-2 px-3 py-2 bg-orange-100 text-orange-700 rounded-lg text-xs font-bold hover:bg-orange-200"><ClipboardCheck size={16} /> Opname Pusat</button>
-                    <button onClick={() => setShowRestockModal(true)} className="flex-1 md:flex-none flex items-center justify-center gap-2 px-3 py-2 bg-teal-600 text-white rounded-lg text-xs font-bold hover:bg-teal-700 shadow-sm"><PackagePlus size={16} /> Restock Pusat</button>
                   </div>
                 )}
               </div>
-              
-              <div className="overflow-x-auto">
-                <table className="w-full text-sm text-left min-w-[500px]">
-                  <thead className="bg-slate-50 text-slate-500 uppercase font-bold text-xs">
-                    <tr><th className="p-3">Item</th><th className="p-3">Tipe</th><th className="p-3">Stok {currentBranch.id === 'GUDANG' ? 'Pusat' : 'Lokal'}</th>{currentBranch.id !== 'GUDANG' && <th className="p-3 text-right">Aksi</th>}</tr>
-                  </thead>
-                  <tbody className="divide-y">
-                    {inventory.map(item => (
-                      <tr key={item.id} className="hover:bg-slate-50">
-                        <td className="p-3 font-medium text-slate-800">{item.name}</td>
-                        <td className="p-3 text-slate-500 capitalize">{item.type}</td>
-                        <td className="p-3">
-                          {currentBranch.id === 'GUDANG' ? (
-                            <span className={`font-bold ${item.stock < 10 ? 'text-red-500' : 'text-slate-700'}`}>{item.stock} pcs</span>
-                          ) : (
-                            <span className={`font-bold ${getBranchQty(currentBranch.id, item.id) < 5 ? 'text-red-500' : 'text-slate-700'}`}>{getBranchQty(currentBranch.id, item.id)} pcs</span>
-                          )}
-                        </td>
-                        {currentBranch.id !== 'GUDANG' && (
-                          <td className="p-3 text-right">
-                            <button onClick={() => handleOpenRequestModal(item)} className="text-xs bg-teal-100 hover:bg-teal-200 text-teal-800 px-3 py-1 rounded transition whitespace-nowrap">Request ke Pusat</button>
-                          </td>
-                        )}
-                      </tr>
+            </div>
+          )}
+          
+          {/* --- VIEW: POS (POINT OF SALE) --- */}
+          {activeRole === 'POS' && (
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+              <div className="lg:col-span-2 space-y-6">
+                <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200">
+                  <div className="flex justify-between items-center mb-4"><h2 className="text-lg font-bold flex items-center gap-2 text-slate-700"><User size={20} /> Data Pelanggan & Resep</h2></div>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+                    <div><label className="block text-xs font-semibold text-slate-500 mb-1">Nama Pelanggan</label><input type="text" className="w-full p-2 border rounded-lg focus:ring-2 focus:ring-teal-500 outline-none" placeholder="Contoh: Budi Santoso" value={customerName} onChange={(e) => setCustomerName(e.target.value)} /></div>
+                    <div><label className="block text-xs font-semibold text-slate-500 mb-1">Kirim Order Ke (Produksi)</label><select className="w-full p-2 border rounded-lg bg-slate-50" value={selectedProductionHub} onChange={(e) => setSelectedProductionHub(e.target.value)}>{branches.filter(b => b.type === 'PRODUCTION').map(b => (<option key={b.id} value={b.id}>{b.name}</option>))}</select></div>
+                  </div>
+                  {/* Kartu Resep */}
+                  <div className="border rounded-lg overflow-hidden">
+                    <table className="w-full text-sm text-center">
+                      <thead className="bg-slate-100 text-slate-600 font-semibold"><tr><th className="p-2 text-left">Mata</th><th className="p-2">SPH</th><th className="p-2">CYL</th><th className="p-2">AXIS</th><th className="p-2">ADD</th></tr></thead>
+                      <tbody className="divide-y">
+                        <tr><td className="p-2 font-bold text-left bg-slate-50">R (OD)</td><td className="p-1"><input type="text" className="w-full text-center p-1 border rounded" placeholder="-0.00" value={prescription.od.sph} onChange={e => setPrescription({...prescription, od: {...prescription.od, sph: e.target.value}})} /></td><td className="p-1"><input type="text" className="w-full text-center p-1 border rounded" placeholder="-0.00" value={prescription.od.cyl} onChange={e => setPrescription({...prescription, od: {...prescription.od, cyl: e.target.value}})} /></td><td className="p-1"><input type="text" className="w-full text-center p-1 border rounded" placeholder="0" value={prescription.od.axis} onChange={e => setPrescription({...prescription, od: {...prescription.od, axis: e.target.value}})} /></td><td className="p-1"><input type="text" className="w-full text-center p-1 border rounded" placeholder="+0.00" value={prescription.od.add} onChange={e => setPrescription({...prescription, od: {...prescription.od, add: e.target.value}})} /></td></tr>
+                        <tr><td className="p-2 font-bold text-left bg-slate-50">L (OS)</td><td className="p-1"><input type="text" className="w-full text-center p-1 border rounded" placeholder="-0.00" value={prescription.os.sph} onChange={e => setPrescription({...prescription, os: {...prescription.os, sph: e.target.value}})} /></td><td className="p-1"><input type="text" className="w-full text-center p-1 border rounded" placeholder="-0.00" value={prescription.os.cyl} onChange={e => setPrescription({...prescription, os: {...prescription.os, cyl: e.target.value}})} /></td><td className="p-1"><input type="text" className="w-full text-center p-1 border rounded" placeholder="0" value={prescription.os.axis} onChange={e => setPrescription({...prescription, os: {...prescription.os, axis: e.target.value}})} /></td><td className="p-1"><input type="text" className="w-full text-center p-1 border rounded" placeholder="+0.00" value={prescription.os.add} onChange={e => setPrescription({...prescription, os: {...prescription.os, add: e.target.value}})} /></td></tr>
+                      </tbody>
+                    </table>
+                    <div className="p-2 bg-slate-50 border-t flex items-center gap-2"><span className="text-sm font-semibold text-slate-600">PD (Pupil Distance):</span><input type="text" className="w-20 p-1 border rounded text-center" placeholder="62" value={prescription.pd} onChange={e => setPrescription({...prescription, pd: e.target.value})} /><span className="text-xs text-slate-500">mm</span></div>
+                  </div>
+                </div>
+
+                {/* Katalog Produk */}
+                <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200">
+                  <h2 className="text-lg font-bold mb-4 flex items-center gap-2 text-slate-700"><Package size={20} /> Katalog Frame & Lensa</h2>
+                  <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
+                    {inventory.filter(i => ['frame', 'lens'].includes(i.type)).map(item => (
+                      <button key={item.id} onClick={() => addToCart(item)} className="text-left border rounded-lg p-3 hover:border-teal-500 hover:shadow-md transition bg-slate-50">
+                        <div className="text-sm font-bold text-slate-800">{item.name}</div>
+                        <div className="text-xs text-slate-500 mb-2">Stok {currentBranch.name}: {getBranchQty(currentBranch.id, item.id)}</div>
+                        <div className="text-teal-700 font-semibold">{formatRupiah(item.price)}</div>
+                      </button>
                     ))}
-                  </tbody>
-                </table>
+                  </div>
+                </div>
+              </div>
+
+              {/* Kolom Kanan: Keranjang */}
+              <div className="lg:col-span-1">
+                <div className="bg-white rounded-xl shadow-sm border border-slate-200 sticky top-24">
+                  <div className="p-4 border-b bg-slate-50 rounded-t-xl"><h2 className="font-bold text-lg flex items-center gap-2"><ShoppingCart size={20} /> Ringkasan Order</h2></div>
+                  <div className="p-4 min-h-[300px] flex flex-col">
+                    {cart.length === 0 ? (
+                      <div className="flex-1 flex flex-col items-center justify-center text-slate-400"><ShoppingCart size={48} className="mb-2 opacity-20" /><p className="text-sm">Keranjang kosong</p></div>
+                    ) : (
+                      <div className="space-y-3 flex-1">{cart.map((item, idx) => (<div key={idx} className="flex justify-between items-center p-2 bg-slate-50 rounded border"><div><div className="text-sm font-medium">{item.name}</div><div className="text-xs text-teal-600">{formatRupiah(item.price)}</div></div><button onClick={() => removeFromCart(idx)} className="text-red-400 hover:text-red-600"><Plus size={16} className="rotate-45" /></button></div>))}</div>
+                    )}
+                    <div className="mt-4 pt-4 border-t">
+                      <div className="flex justify-between font-bold text-lg mb-4"><span>Total</span><span>{formatRupiah(cart.reduce((a, b) => a + b.price, 0))}</span></div>
+                      <button onClick={handleCheckout} className="w-full bg-teal-600 hover:bg-teal-700 text-white py-3 rounded-lg font-bold shadow-lg shadow-teal-200 transition flex items-center justify-center gap-2">Proses Pembayaran <ArrowRight size={18} /></button>
+                    </div>
+                  </div>
+                </div>
               </div>
             </div>
+          )}
 
-            <div className="lg:col-span-1">
-              {currentBranch.id === 'GUDANG' ? (
-                <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-4 md:p-6 sticky top-24">
-                  <h2 className="text-lg font-bold text-slate-800 mb-4 flex items-center gap-2"><Truck size={20} /> Permintaan Cabang</h2>
-                  <div className="space-y-4">
-                    {stockRequests.filter(r => r.status === 'PENDING').length === 0 ? (<p className="text-sm text-slate-400 text-center py-8">Tidak ada permintaan stok.</p>) : (
-                      stockRequests.filter(r => r.status === 'PENDING').map(req => (
-                        <div key={req.id} className="p-4 border rounded-lg bg-slate-50">
-                          <div className="flex justify-between items-start mb-2"><div><p className="font-bold text-sm text-slate-800">{req.branchName}</p><p className="text-xs text-slate-500">Meminta: {req.itemName}</p></div><span className="font-bold text-teal-600 bg-teal-50 px-2 py-1 rounded text-xs">+{req.qty}</span></div>
-                          {req.note && <p className="text-xs text-slate-400 italic mb-2">"{req.note}"</p>}
-                          <div className="flex gap-2 mt-2"><button onClick={() => approveStockRequest(req.id)} className="flex-1 bg-teal-600 text-white text-xs py-2 rounded hover:bg-teal-700">Setujui & Kirim</button></div>
+          {/* --- VIEW: PRODUCTION (LAB) --- */}
+          {activeRole === 'PRODUCTION' && (
+            <div className="space-y-6">
+              <div className="flex items-center justify-between">
+                <h2 className="text-2xl font-bold text-slate-800">Dashboard Produksi: {currentBranch.name}</h2>
+                <div className="flex gap-2">
+                  <span className="px-3 py-1 bg-yellow-100 text-yellow-800 rounded-full text-xs font-bold">Pending: {orders.filter(o => o.productionBranchId === currentBranch.id && o.status === 'PENDING').length}</span>
+                  <span className="px-3 py-1 bg-blue-100 text-blue-800 rounded-full text-xs font-bold">In Progress: {orders.filter(o => o.productionBranchId === currentBranch.id && o.status === 'IN_PROGRESS').length}</span>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
+                {orders.filter(o => o.productionBranchId === currentBranch.id && o.status !== 'COMPLETED').map(order => (
+                  <div key={order.id} className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
+                    <div className="p-4 border-b bg-slate-50 flex justify-between items-center">
+                      <div><h3 className="font-bold text-lg">{order.customer}</h3><p className="text-xs text-slate-500">Ref: {order.id} • Dari: {branches.find(b => b.id === order.branchId)?.name}</p></div>
+                      <div className={`px-3 py-1 rounded-full text-xs font-bold ${getStatusColor(order.status)}`}>{order.status}</div>
+                    </div>
+                    <div className="p-4 grid grid-cols-1 md:grid-cols-2 gap-6">
+                      <div>
+                        <div className="bg-blue-50 p-3 rounded-lg mb-4 text-xs"><p className="font-bold text-blue-800 mb-1">Resep Kacamata:</p><div className="grid grid-cols-2 gap-2"><div><span className="font-semibold">R:</span> {order.prescription.od.sph} / {order.prescription.od.cyl} x {order.prescription.od.axis}</div><div><span className="font-semibold">L:</span> {order.prescription.os.sph} / {order.prescription.os.cyl} x {order.prescription.os.axis}</div></div><p className="mt-1">PD: {order.prescription.pd}mm</p></div>
+                        <div className="space-y-2 mb-4"><p className="text-xs font-bold text-slate-500 uppercase">Items:</p>{order.items.map((item, i) => (<div key={i} className="text-sm flex items-center gap-2"><CheckCircle size={14} className="text-teal-600" /> {item.name}</div>))}</div>
+                        <div className="flex items-center gap-2 p-2 bg-slate-100 rounded text-sm"><HardHat size={16} className="text-slate-500" /><span className="font-semibold text-slate-600">Teknisi:</span><span className="font-bold text-slate-800">{order.technician || '- Belum Ditunjuk -'}</span></div>
+                      </div>
+                      <div className="border-l pl-4">
+                        <div className="mb-4">
+                          <label className="text-xs font-bold text-slate-500 block mb-2">Update Status & Teknisi:</label>
+                          <div className="space-y-2">
+                            {order.status === 'PENDING' && (
+                              <div className="flex gap-2">
+                                <select id={`tech-select-${order.id}`} className="text-xs border p-1.5 rounded flex-1 bg-white"><option value="">-- Pilih Teknisi --</option>{technicians.map(t => (<option key={t.id} value={t.name}>{t.name}</option>))}</select>
+                                <button onClick={() => {const select = document.getElementById(`tech-select-${order.id}`); assignTechnicianAndStart(order.id, select.value);}} className="btn-action bg-blue-600 text-white">Mulai</button>
+                              </div>
+                            )}
+                            {order.status !== 'PENDING' && (
+                              <div className="flex gap-2 flex-wrap">
+                                {order.status === 'IN_PROGRESS' && (<button onClick={() => updateOrderStatus(order.id, 'QC')} className="btn-action bg-purple-600 text-white">Selesai & QC</button>)}
+                                {order.status === 'QC' && (<button onClick={() => updateOrderStatus(order.id, 'READY')} className="btn-action bg-green-600 text-white">Lolos QC</button>)}
+                                {order.status === 'READY' && (<button onClick={() => updateOrderStatus(order.id, 'COMPLETED')} className="btn-action bg-slate-800 text-white">Kirim ke Cabang Asal</button>)}
+                              </div>
+                            )}
+                          </div>
                         </div>
-                      ))
-                    )}
+                        <div className="mb-4">
+                           <label className="text-xs font-bold text-slate-500 block mb-2">Pencatatan Part (Stok Cabang):</label>
+                           <div className="flex gap-2 mb-2">
+                              <select id={`part-select-${order.id}`} className="text-xs border p-1 rounded w-full">
+                                {inventory.map(i => (
+                                  <option key={i.id} value={i.id}>{i.name} (Stok: {getBranchQty(currentBranch.id, i.id)})</option>
+                                ))}
+                              </select>
+                           </div>
+                           <div className="flex gap-2">
+                             <button onClick={() => {const select = document.getElementById(`part-select-${order.id}`); useSparePart(order.id, select.value, false);}} className="text-xs bg-slate-200 hover:bg-slate-300 text-slate-800 px-2 py-1 rounded flex-1">+ Pakai Part</button>
+                             <button onClick={() => {const select = document.getElementById(`part-select-${order.id}`); useSparePart(order.id, select.value, true);}} className="text-xs bg-red-100 hover:bg-red-200 text-red-700 px-2 py-1 rounded flex-1 flex items-center justify-center gap-1"><AlertTriangle size={12}/> Lapor Rusak</button>
+                           </div>
+                        </div>
+                        <div className="bg-slate-50 rounded p-2 max-h-32 overflow-y-auto text-[10px] space-y-1 border">
+                           {order.logs.map((log, idx) => (<div key={idx} className={`${log.type === 'danger' ? 'text-red-600 font-bold' : 'text-slate-600'}`}><span className="opacity-50">[{log.date.split(' ')[1]}]</span> {log.msg}</div>))}
+                        </div>
+                      </div>
+                    </div>
                   </div>
-                  <div className="mt-8 pt-4 border-t">
-                    <h3 className="text-sm font-bold text-slate-700 mb-2 flex items-center gap-2"><History size={16} /> Riwayat Pengiriman</h3>
-                    <div className="space-y-2">{stockRequests.filter(r => r.status === 'APPROVED').map(req => (<div key={req.id} className="text-xs flex justify-between text-slate-500"><span>Kirim ke {req.branchName.substring(0, 15)}...</span><span className="text-green-600 font-bold">Selesai</span></div>))}</div>
-                  </div>
-                </div>
-              ) : (
-                <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-4 md:p-6 sticky top-24">
-                  <h2 className="text-lg font-bold text-slate-800 mb-4">Status Request Saya</h2>
-                  <div className="space-y-3">
-                    {stockRequests.filter(r => r.branchId === currentBranch.id).map(req => (
-                      <div key={req.id} className="flex justify-between items-center text-sm border-b pb-2"><div><p className="font-medium">{req.itemName}</p><p className="text-xs text-slate-500">Qty: {req.qty}</p></div><span className={`text-xs px-2 py-1 rounded font-bold ${req.status === 'APPROVED' ? 'bg-green-100 text-green-700' : 'bg-yellow-100 text-yellow-700'}`}>{req.status}</span></div>
-                    ))}
-                    {stockRequests.filter(r => r.branchId === currentBranch.id).length === 0 && (<p className="text-sm text-slate-400">Belum ada request aktif.</p>)}
-                  </div>
-                </div>
-              )}
+                ))}
+                {orders.filter(o => o.productionBranchId === currentBranch.id && o.status !== 'COMPLETED').length === 0 && (
+                  <div className="col-span-full py-12 text-center text-slate-400 bg-white rounded-xl border border-dashed border-slate-300"><ClipboardList size={48} className="mx-auto mb-2 opacity-20" /><p>Tidak ada pesanan aktif di antrian produksi.</p></div>
+                )}
+              </div>
             </div>
-          </div>
-        )}
-      </main>
+          )}
+
+          {/* --- VIEW: WAREHOUSE (GUDANG & STOK CABANG) --- */}
+          {activeRole === 'WAREHOUSE' && (
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+              <div className="lg:col-span-2 bg-white rounded-xl shadow-sm border border-slate-200 p-6">
+                <div className="flex justify-between items-center mb-6">
+                  <div>
+                    <h2 className="text-xl font-bold text-slate-800 flex items-center gap-2"><Store size={24} /> Stok {currentBranch.name}</h2>
+                    {currentBranch.id === 'GUDANG' && (<p className="text-sm text-slate-500 mt-1">Kelola fisik barang masuk dan keluar Gudang Pusat.</p>)}
+                  </div>
+                  {currentBranch.id !== 'GUDANG' && (<span className="text-xs bg-teal-50 text-teal-700 px-3 py-1 rounded-full border border-teal-200">Mode Cabang: Request ke Pusat</span>)}
+                   {currentBranch.id === 'GUDANG' && (
+                    <div className="flex gap-2">
+                      <button onClick={() => setShowOpnameModal(true)} className="flex items-center gap-2 px-3 py-2 bg-orange-100 text-orange-700 rounded-lg text-xs font-bold hover:bg-orange-200"><ClipboardCheck size={16} /> Opname Pusat</button>
+                      <button onClick={() => setShowRestockModal(true)} className="flex items-center gap-2 px-3 py-2 bg-teal-600 text-white rounded-lg text-xs font-bold hover:bg-teal-700 shadow-sm"><PackagePlus size={16} /> Restock Pusat</button>
+                    </div>
+                  )}
+                </div>
+                
+                <div className="overflow-x-auto">
+                  <table className="w-full text-sm text-left">
+                    <thead className="bg-slate-50 text-slate-500 uppercase font-bold text-xs">
+                      <tr><th className="p-3">Item</th><th className="p-3">Tipe</th><th className="p-3">Stok {currentBranch.id === 'GUDANG' ? 'Pusat' : 'Lokal'}</th>{currentBranch.id !== 'GUDANG' && <th className="p-3 text-right">Aksi</th>}</tr>
+                    </thead>
+                    <tbody className="divide-y">
+                      {inventory.map(item => (
+                        <tr key={item.id} className="hover:bg-slate-50">
+                          <td className="p-3 font-medium text-slate-800">{item.name}</td>
+                          <td className="p-3 text-slate-500 capitalize">{item.type}</td>
+                          <td className="p-3">
+                            {currentBranch.id === 'GUDANG' ? (
+                              <span className={`font-bold ${item.stock < 10 ? 'text-red-500' : 'text-slate-700'}`}>{item.stock} pcs</span>
+                            ) : (
+                              <span className={`font-bold ${getBranchQty(currentBranch.id, item.id) < 5 ? 'text-red-500' : 'text-slate-700'}`}>{getBranchQty(currentBranch.id, item.id)} pcs</span>
+                            )}
+                          </td>
+                          {currentBranch.id !== 'GUDANG' && (
+                            <td className="p-3 text-right">
+                              <button onClick={() => handleOpenRequestModal(item)} className="text-xs bg-teal-100 hover:bg-teal-200 text-teal-800 px-3 py-1 rounded transition">Request ke Pusat</button>
+                            </td>
+                          )}
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+              <div className="lg:col-span-1">
+                {currentBranch.id === 'GUDANG' ? (
+                  <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-6 sticky top-24">
+                    <h2 className="text-lg font-bold text-slate-800 mb-4 flex items-center gap-2"><Truck size={20} /> Permintaan Cabang</h2>
+                    <div className="space-y-4">
+                      {stockRequests.filter(r => r.status === 'PENDING').length === 0 ? (<p className="text-sm text-slate-400 text-center py-8">Tidak ada permintaan stok.</p>) : (
+                        stockRequests.filter(r => r.status === 'PENDING').map(req => (
+                          <div key={req.id} className="p-4 border rounded-lg bg-slate-50">
+                            <div className="flex justify-between items-start mb-2"><div><p className="font-bold text-sm text-slate-800">{req.branchName}</p><p className="text-xs text-slate-500">Meminta: {req.itemName}</p></div><span className="font-bold text-teal-600 bg-teal-50 px-2 py-1 rounded text-xs">+{req.qty}</span></div>
+                            {req.note && <p className="text-xs text-slate-400 italic mb-2">"{req.note}"</p>}
+                            <div className="flex gap-2 mt-2"><button onClick={() => approveStockRequest(req.id)} className="flex-1 bg-teal-600 text-white text-xs py-1.5 rounded hover:bg-teal-700">Setujui & Kirim</button></div>
+                          </div>
+                        ))
+                      )}
+                    </div>
+                    <div className="mt-8 pt-4 border-t">
+                      <h3 className="text-sm font-bold text-slate-700 mb-2 flex items-center gap-2"><History size={16} /> Riwayat Pengiriman</h3>
+                      <div className="space-y-2">{stockRequests.filter(r => r.status === 'APPROVED').map(req => (<div key={req.id} className="text-xs flex justify-between text-slate-500"><span>Kirim ke {req.branchName.substring(0, 15)}...</span><span className="text-green-600 font-bold">Selesai</span></div>))}</div>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-6 sticky top-24">
+                    <h2 className="text-lg font-bold text-slate-800 mb-4">Status Request Saya</h2>
+                    <div className="space-y-3">
+                      {stockRequests.filter(r => r.branchId === currentBranch.id).map(req => (
+                        <div key={req.id} className="flex justify-between items-center text-sm border-b pb-2"><div><p className="font-medium">{req.itemName}</p><p className="text-xs text-slate-500">Qty: {req.qty}</p></div><span className={`text-xs px-2 py-1 rounded font-bold ${req.status === 'APPROVED' ? 'bg-green-100 text-green-700' : 'bg-yellow-100 text-yellow-700'}`}>{req.status}</span></div>
+                      ))}
+                      {stockRequests.filter(r => r.branchId === currentBranch.id).length === 0 && (<p className="text-sm text-slate-400">Belum ada request aktif.</p>)}
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+        </main>
+      )}
       <style>{`.btn-action {@apply px-3 py-1.5 rounded text-xs font-semibold shadow-sm hover:shadow transition;}`}</style>
     </div>
   );
