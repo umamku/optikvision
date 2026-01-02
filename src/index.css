@@ -1,0 +1,45 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* --- Custom Component Classes --- */
+
+/* Style tombol aksi standar */
+.btn-action {
+  @apply px-3 py-1.5 rounded text-xs font-semibold shadow-sm hover:shadow transition;
+}
+
+/* --- Utilities: Hide Scrollbar (Untuk Menu Mobile) --- */
+
+/* Sembunyikan scrollbar untuk Chrome, Safari dan Opera */
+.no-scrollbar::-webkit-scrollbar {
+    display: none;
+}
+
+/* Sembunyikan scrollbar untuk IE, Edge dan Firefox */
+.no-scrollbar {
+    -ms-overflow-style: none;  /* IE and Edge */
+    scrollbar-width: none;  /* Firefox */
+}
+
+/* --- Global: Custom Scrollbar (Untuk Modal & Konten) --- */
+/* Membuat scrollbar terlihat lebih tipis dan modern */
+
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: #f1f5f9; 
+  border-radius: 10px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #cbd5e1; 
+  border-radius: 10px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #94a3b8; 
+}
